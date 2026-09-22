@@ -285,6 +285,8 @@
   }
   thead th.num, thead th.amt { text-align: right; }
   thead th.actions { width: 34px; }
+  td.item-date { width: 132px; }
+  td.item-date input { width: auto; }
   tbody td {
     padding: 8px 10px;
     border-bottom: 1px solid var(--line);
@@ -658,8 +660,6 @@
           <label><input type="checkbox" id="sameAddr" checked /> Same as billing address</label>
         </div>
         <div class="field"><input id="serviceAddress" placeholder="Service address" disabled /></div>
-        <span class="stacked-label">Service date</span>
-        <div class="field"><input type="date" id="serviceDate" /></div>
       </div>
     </section>
 
@@ -669,6 +669,7 @@
         <thead>
           <tr>
             <th>Description</th>
+            <th>Date</th>
             <th class="num">Hrs</th>
             <th class="num">Rate</th>
             <th class="amt">Amount</th>
@@ -767,8 +768,7 @@
     clientPhone: '',
     sameAddr: true,
     serviceAddress: '',
-    serviceDate: todayISO(),
-    items: [{ desc: 'Standard Clean', qty: 1, rate: 120 }],
+    items: [{ desc: 'Standard Clean', qty: 1, rate: 120, date: todayISO() }],
     discount: 0,
     taxRate: 0,
     amountPaid: 0,
@@ -861,8 +861,8 @@
       serviceAddress: row.service_address,
       serviceDate: row.service_date,
       items: services.length
-        ? services.map(function (s) { return { desc: s.description || '', qty: s.hours === null ? '' : s.hours, rate: s.rate === null ? '' : s.rate }; })
-        : [{ desc: '', qty: '', rate: '' }],
+        ? services.map(function (s) { return { desc: s.description || '', qty: s.hours === null ? '' : s.hours, rate: s.rate === null ? '' : s.rate, date: s.service_date || '' }; })
+        : [{ desc: '', qty: '', rate: '', date: '' }],
       discount: row.discount,
       taxRate: row.tax_rate,
       amountPaid: row.amount_paid,
@@ -1105,7 +1105,7 @@
     if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);font-style:italic;padding:20px;">Loading…</td></tr>';
     var result = await supabaseClient
       .from('invoices')
-      .select('*, client:clients(name,address,email,phone), invoice_line_items(description,hours,rate,amount,position)')
+      .select('*, client:clients(name,address,email,phone), invoice_line_items(description,hours,rate,amount,position,service_date)')
       .order('invoice_date', { ascending: false });
     if (result.error) {
       console.error(result.error);
@@ -1169,6 +1169,17 @@
       });
       tdDesc.appendChild(descSelect);
 
+      var tdDate = document.createElement('td');
+      tdDate.className = 'item-date';
+      var dateInput = document.createElement('input');
+      dateInput.type = 'date';
+      dateInput.value = item.date || '';
+      dateInput.addEventListener('input', function () {
+        state.items[index].date = dateInput.value;
+        saveState();
+      });
+      tdDate.appendChild(dateInput);
+
       var tdQty = document.createElement('td');
       tdQty.className = 'num qty';
       var qtyInput = document.createElement('input');
@@ -1218,6 +1229,7 @@
       tdActions.appendChild(removeBtn);
 
       tr.appendChild(tdDesc);
+      tr.appendChild(tdDate);
       tr.appendChild(tdQty);
       tr.appendChild(tdRate);
       tr.appendChild(tdAmt);
@@ -1228,7 +1240,8 @@
   }
 
   function addItem() {
-    state.items.push({ desc: '', qty: '', rate: '' });
+    var lastDate = state.items.length ? state.items[state.items.length - 1].date : '';
+    state.items.push({ desc: '', qty: '', rate: '', date: lastDate || todayISO() });
     saveState();
     renderItems();
   }
@@ -1299,22 +1312,17 @@
 
   function bindDates() {
     el('invDate').value = state.invDate;
-    el('serviceDate').value = state.serviceDate;
     el('invDate').addEventListener('input', function () {
       state.invDate = el('invDate').value;
       saveState();
       recalc();
-    });
-    el('serviceDate').addEventListener('input', function () {
-      state.serviceDate = el('serviceDate').value;
-      saveState();
     });
   }
 
   function applyStateToForm() {
     var TEXT_FIELDS = ['bizTag', 'bizPhone', 'bizEmail', 'invNumber', 'clientAddress', 'clientEmail', 'clientPhone', 'paymentInfo', 'notes'];
     var NUMBER_FIELDS = ['invTerms', 'discount', 'taxRate', 'amountPaid'];
-    var DATE_FIELDS = ['invDate', 'serviceDate'];
+    var DATE_FIELDS = ['invDate'];
     TEXT_FIELDS.forEach(function (k) { el(k).value = state[k] || ''; });
     NUMBER_FIELDS.forEach(function (k) { el(k).value = (state[k] === '' || state[k] === undefined || state[k] === null) ? 0 : state[k]; });
     DATE_FIELDS.forEach(function (k) { el(k).value = state[k] || ''; });
@@ -1331,6 +1339,8 @@
 
   function buildSnapshot() {
     recalc();
+    var itemDates = state.items.map(function (it) { return it.date; }).filter(Boolean).sort();
+    var derivedServiceDate = itemDates.length ? itemDates[itemDates.length - 1] : null;
     return {
       id: null,
       savedAt: new Date().toISOString(),
@@ -1344,7 +1354,7 @@
       clientPhone: state.clientPhone,
       sameAddr: state.sameAddr,
       serviceAddress: state.serviceAddress,
-      serviceDate: state.serviceDate,
+      serviceDate: derivedServiceDate,
       items: JSON.parse(JSON.stringify(state.items)),
       discount: Number(state.discount) || 0,
       taxRate: Number(state.taxRate) || 0,
@@ -1452,7 +1462,8 @@
         hours: hours,
         rate: rate,
         amount: (hours || 0) * (rate || 0),
-        position: i
+        position: i,
+        service_date: it.date || null
       });
     }
 
@@ -1641,8 +1652,7 @@
     state.clientPhone = inv.clientPhone;
     state.sameAddr = inv.sameAddr;
     state.serviceAddress = inv.serviceAddress;
-    state.serviceDate = inv.serviceDate;
-    state.items = JSON.parse(JSON.stringify(inv.items && inv.items.length ? inv.items : [{ desc: '', qty: '', rate: '' }]));
+    state.items = JSON.parse(JSON.stringify(inv.items && inv.items.length ? inv.items : [{ desc: '', qty: '', rate: '', date: '' }]));
     state.discount = inv.discount;
     state.taxRate = inv.taxRate;
     state.amountPaid = inv.amountPaid;
@@ -1658,7 +1668,7 @@
     openInvoiceFromLog(id);
     state.invNumber = computeNextInvoiceNumber();
     state.invDate = todayISO();
-    state.serviceDate = todayISO();
+    state.items.forEach(function (it) { it.date = todayISO(); });
     state.amountPaid = 0;
     saveState();
     applyStateToForm();
@@ -1682,7 +1692,7 @@
     state.paymentInfo = preserved.paymentInfo;
     state.thankyou = preserved.thankyou;
     state.invDate = todayISO();
-    state.serviceDate = todayISO();
+    state.items.forEach(function (it) { it.date = todayISO(); });
     state.invNumber = computeNextInvoiceNumber();
     saveState();
     applyStateToForm();
@@ -1797,7 +1807,6 @@
       localStorage.removeItem(STORAGE_KEY);
       state = JSON.parse(JSON.stringify(defaultState));
       state.invDate = todayISO();
-      state.serviceDate = todayISO();
       location.reload();
     });
   }

@@ -129,6 +129,7 @@ create table public.invoice_line_items (
   rate numeric,
   amount numeric,
   position integer not null default 0,
+  service_date date,
   created_at timestamptz not null default now()
 );
 
