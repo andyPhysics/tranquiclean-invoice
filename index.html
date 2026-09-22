@@ -846,7 +846,7 @@
 
   function rowToLocal(row) {
     var client = row.client || {};
-    var services = (row.services || []).slice().sort(function (a, b) { return (a.position || 0) - (b.position || 0); });
+    var services = (row.invoice_line_items || []).slice().sort(function (a, b) { return (a.position || 0) - (b.position || 0); });
     return {
       id: row.id,
       savedAt: row.updated_at || row.created_at,
@@ -891,12 +891,38 @@
     return await supabaseClient.from('clients').insert(payload).select().single();
   }
 
+  async function upsertService(name, rate) {
+    var trimmedName = (name || '').trim();
+    if (!trimmedName) return { data: null, error: null };
+    var payload = { name: trimmedName, default_rate: (rate === '' || rate === undefined || rate === null) ? null : Number(rate) };
+    var existing = await supabaseClient.from('services').select('id').ilike('name', trimmedName).limit(1).maybeSingle();
+    if (existing.error) return existing;
+    if (existing.data) {
+      return await supabaseClient.from('services').update(payload).eq('id', existing.data.id).select().single();
+    }
+    return await supabaseClient.from('services').insert(payload).select().single();
+  }
+
+  async function fetchServicesCatalog() {
+    var result = await supabaseClient.from('services').select('name,default_rate').order('name');
+    if (result.error) {
+      console.error(result.error);
+      return;
+    }
+    var dl = el('serviceOptions');
+    var defaults = ['Standard Clean', 'Deep Clean'];
+    var names = {};
+    defaults.forEach(function (n) { names[n] = true; });
+    result.data.forEach(function (s) { if (s.name) names[s.name] = true; });
+    dl.innerHTML = Object.keys(names).map(function (n) { return '<option value="' + escapeHtml(n) + '"></option>'; }).join('');
+  }
+
   async function fetchInvoices() {
     var tbody = el('logBody');
     if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);font-style:italic;padding:20px;">Loading…</td></tr>';
     var result = await supabaseClient
       .from('invoices')
-      .select('*, client:clients(name,address,email,phone), services(description,hours,rate,amount,position)')
+      .select('*, client:clients(name,address,email,phone), invoice_line_items(description,hours,rate,amount,position)')
       .order('invoice_date', { ascending: false });
     if (result.error) {
       console.error(result.error);
@@ -1204,30 +1230,43 @@
     }
     var invoiceId = invoiceResult.data.id;
 
-    var delResult = await supabaseClient.from('services').delete().eq('invoice_id', invoiceId);
+    var delResult = await supabaseClient.from('invoice_line_items').delete().eq('invoice_id', invoiceId);
     if (delResult.error) {
       btn.disabled = false;
       alert('Could not update line items: ' + delResult.error.message);
       return;
     }
 
-    var serviceRows = snap.items
-      .filter(function (it) { return (it.desc && it.desc.trim()) || it.qty !== '' || it.rate !== ''; })
-      .map(function (it, idx) {
-        var hours = it.qty === '' || it.qty === undefined ? null : Number(it.qty);
-        var rate = it.rate === '' || it.rate === undefined ? null : Number(it.rate);
-        return {
-          invoice_id: invoiceId,
-          description: it.desc || '',
-          hours: hours,
-          rate: rate,
-          amount: (hours || 0) * (rate || 0),
-          position: idx
-        };
-      });
+    var billedItems = snap.items.filter(function (it) { return (it.desc && it.desc.trim()) || it.qty !== '' || it.rate !== ''; });
 
-    if (serviceRows.length) {
-      var insResult = await supabaseClient.from('services').insert(serviceRows);
+    var lineItemRows = [];
+    for (var i = 0; i < billedItems.length; i++) {
+      var it = billedItems[i];
+      var hours = it.qty === '' || it.qty === undefined ? null : Number(it.qty);
+      var rate = it.rate === '' || it.rate === undefined ? null : Number(it.rate);
+      var serviceId = null;
+      if (it.desc && it.desc.trim()) {
+        var svcResult = await upsertService(it.desc, rate);
+        if (svcResult.error) {
+          btn.disabled = false;
+          alert('Could not save service "' + it.desc + '": ' + svcResult.error.message);
+          return;
+        }
+        serviceId = svcResult.data ? svcResult.data.id : null;
+      }
+      lineItemRows.push({
+        invoice_id: invoiceId,
+        service_id: serviceId,
+        description: it.desc || '',
+        hours: hours,
+        rate: rate,
+        amount: (hours || 0) * (rate || 0),
+        position: i
+      });
+    }
+
+    if (lineItemRows.length) {
+      var insResult = await supabaseClient.from('invoice_line_items').insert(lineItemRows);
       if (insResult.error) {
         btn.disabled = false;
         alert('Could not save line items: ' + insResult.error.message);
@@ -1237,6 +1276,7 @@
 
     btn.disabled = false;
     await fetchInvoices();
+    await fetchServicesCatalog();
     flashButton(btn, 'Saved ✓');
   }
 
@@ -1446,6 +1486,7 @@
     el('appRoot').style.display = '';
     el('authedEmail').textContent = session.user.email;
     await fetchInvoices();
+    await fetchServicesCatalog();
   }
 
   async function initAuth() {

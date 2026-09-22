@@ -1,7 +1,10 @@
 -- TranquiClean invoice log — run this in Supabase → SQL Editor.
--- This replaces the old single-table `invoices` schema with three normalized
--- tables: clients, invoices, services (line items).
+-- Four tables: clients and services are standalone reusable catalogs;
+-- invoices reference a client; invoice_line_items link an invoice to a
+-- service (or a one-off custom description) with the qty/rate actually
+-- billed on that invoice.
 
+drop table if exists public.invoice_line_items;
 drop table if exists public.services;
 drop table if exists public.invoices;
 drop table if exists public.clients;
@@ -36,6 +39,36 @@ create policy "Users can update their own clients"
 
 create policy "Users can delete their own clients"
   on public.clients for delete
+  using (auth.uid() = user_id);
+
+-- ---------- services (reusable catalog, e.g. "Standard Clean" @ $120) ----------
+create table public.services (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  name text not null,
+  default_rate numeric,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index services_user_name_key on public.services (user_id, lower(name));
+
+alter table public.services enable row level security;
+
+create policy "Users can view their own services"
+  on public.services for select
+  using (auth.uid() = user_id);
+
+create policy "Users can insert their own services"
+  on public.services for insert
+  with check (auth.uid() = user_id);
+
+create policy "Users can update their own services"
+  on public.services for update
+  using (auth.uid() = user_id);
+
+create policy "Users can delete their own services"
+  on public.services for delete
   using (auth.uid() = user_id);
 
 -- ---------- invoices ----------
@@ -86,10 +119,11 @@ create policy "Users can delete their own invoices"
   on public.invoices for delete
   using (auth.uid() = user_id);
 
--- ---------- services (line items) ----------
-create table public.services (
+-- ---------- invoice_line_items (what was actually billed on an invoice) ----------
+create table public.invoice_line_items (
   id uuid primary key default gen_random_uuid(),
   invoice_id uuid not null references public.invoices(id) on delete cascade,
+  service_id uuid references public.services(id) on delete set null,
   description text,
   hours numeric,
   rate numeric,
@@ -98,25 +132,25 @@ create table public.services (
   created_at timestamptz not null default now()
 );
 
-create index services_invoice_id_idx on public.services (invoice_id);
+create index invoice_line_items_invoice_id_idx on public.invoice_line_items (invoice_id);
 
-alter table public.services enable row level security;
+alter table public.invoice_line_items enable row level security;
 
-create policy "Users can view their own services"
-  on public.services for select
-  using (exists (select 1 from public.invoices i where i.id = services.invoice_id and i.user_id = auth.uid()));
+create policy "Users can view their own line items"
+  on public.invoice_line_items for select
+  using (exists (select 1 from public.invoices i where i.id = invoice_line_items.invoice_id and i.user_id = auth.uid()));
 
-create policy "Users can insert their own services"
-  on public.services for insert
-  with check (exists (select 1 from public.invoices i where i.id = services.invoice_id and i.user_id = auth.uid()));
+create policy "Users can insert their own line items"
+  on public.invoice_line_items for insert
+  with check (exists (select 1 from public.invoices i where i.id = invoice_line_items.invoice_id and i.user_id = auth.uid()));
 
-create policy "Users can update their own services"
-  on public.services for update
-  using (exists (select 1 from public.invoices i where i.id = services.invoice_id and i.user_id = auth.uid()));
+create policy "Users can update their own line items"
+  on public.invoice_line_items for update
+  using (exists (select 1 from public.invoices i where i.id = invoice_line_items.invoice_id and i.user_id = auth.uid()));
 
-create policy "Users can delete their own services"
-  on public.services for delete
-  using (exists (select 1 from public.invoices i where i.id = services.invoice_id and i.user_id = auth.uid()));
+create policy "Users can delete their own line items"
+  on public.invoice_line_items for delete
+  using (exists (select 1 from public.invoices i where i.id = invoice_line_items.invoice_id and i.user_id = auth.uid()));
 
 -- ---------- updated_at trigger ----------
 create or replace function public.set_updated_at()
@@ -129,6 +163,10 @@ $$ language plpgsql;
 
 create trigger clients_set_updated_at
 before update on public.clients
+for each row execute function public.set_updated_at();
+
+create trigger services_set_updated_at
+before update on public.services
 for each row execute function public.set_updated_at();
 
 create trigger invoices_set_updated_at
