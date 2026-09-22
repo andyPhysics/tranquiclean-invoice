@@ -413,6 +413,15 @@
   .add-service-row input::placeholder { color: var(--muted); }
   .add-service-row button { flex: 0 0 auto; }
 
+  .profile-hint {
+    color: var(--muted);
+    font-size: .82rem;
+    max-width: 46ch;
+    margin: 0 0 22px;
+  }
+  .profile-form { max-width: 360px; display: flex; flex-direction: column; }
+  .profile-form button { margin-top: 20px; align-self: flex-start; }
+
   .client-cards {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
@@ -538,6 +547,7 @@
     .totals-row.balance { background: transparent; border: 1px solid var(--brand); }
     #clientsView { display: none !important; }
     #servicesView { display: none !important; }
+    #profileView { display: none !important; }
     #invoiceView { display: block !important; }
   }
 
@@ -627,6 +637,7 @@
     <button id="tabInvoiceBtn" class="tab active" type="button" role="tab">Invoice</button>
     <button id="tabClientsBtn" class="tab" type="button" role="tab">Clients</button>
     <button id="tabServicesBtn" class="tab" type="button" role="tab">Services</button>
+    <button id="tabProfileBtn" class="tab" type="button" role="tab">Profile</button>
   </div>
   <div class="toolbar-legend">
     <span class="dot edit"></span> you edit
@@ -786,6 +797,22 @@
   </section>
 </main>
 
+<main class="sheet-wrap" id="profileView" style="display: none;">
+  <section class="sheet clients-sheet">
+    <p class="label">Business profile</p>
+    <p class="profile-hint">Saved once here, then used to automatically fill in the tagline, phone, and email whenever you start a new invoice.</p>
+    <div class="profile-form">
+      <span class="stacked-label">Tagline</span>
+      <div class="field"><input id="profileTagline" placeholder="A calmer space, cleaned with care." /></div>
+      <span class="stacked-label">Phone</span>
+      <div class="field"><input id="profilePhone" placeholder="(555) 555-0123" /></div>
+      <span class="stacked-label">Email</span>
+      <div class="field"><input id="profileEmail" type="email" placeholder="hello@tranquiclean.com" /></div>
+      <button id="saveProfileBtn" class="primary" type="button">Save profile</button>
+    </div>
+  </section>
+</main>
+
 </div>
 
 <script>
@@ -892,6 +919,7 @@
   var invoiceLog = [];
   var servicesCatalog = [{ name: 'Standard Clean', default_rate: null }, { name: 'Deep Clean', default_rate: null }];
   var clientsCatalog = [];
+  var businessProfile = null;
 
   function rowToLocal(row) {
     var client = row.client || {};
@@ -964,6 +992,51 @@
     servicesCatalog = Object.keys(byName).map(function (k) { return byName[k]; });
     renderItems();
     if (currentView === 'services') renderServicesView();
+  }
+
+  function applyBusinessProfileIfFresh() {
+    if (!businessProfile) return;
+    var changed = false;
+    if (state.bizTag === defaultState.bizTag && businessProfile.tagline) { state.bizTag = businessProfile.tagline; changed = true; }
+    if (state.bizPhone === defaultState.bizPhone && businessProfile.phone) { state.bizPhone = businessProfile.phone; changed = true; }
+    if (state.bizEmail === defaultState.bizEmail && businessProfile.email) { state.bizEmail = businessProfile.email; changed = true; }
+    if (changed) {
+      saveState();
+      el('bizTag').value = state.bizTag;
+      el('bizPhone').value = state.bizPhone;
+      el('bizEmail').value = state.bizEmail;
+    }
+  }
+
+  async function fetchBusinessProfile() {
+    var result = await supabaseClient.from('business_profile').select('tagline,phone,email').maybeSingle();
+    if (result.error) {
+      console.error(result.error);
+      return;
+    }
+    businessProfile = result.data || null;
+    el('profileTagline').value = businessProfile ? (businessProfile.tagline || '') : '';
+    el('profilePhone').value = businessProfile ? (businessProfile.phone || '') : '';
+    el('profileEmail').value = businessProfile ? (businessProfile.email || '') : '';
+    applyBusinessProfileIfFresh();
+  }
+
+  async function saveBusinessProfile() {
+    var payload = {
+      tagline: el('profileTagline').value.trim(),
+      phone: el('profilePhone').value.trim(),
+      email: el('profileEmail').value.trim()
+    };
+    var btn = el('saveProfileBtn');
+    btn.disabled = true;
+    var result = await supabaseClient.from('business_profile').upsert(payload, { onConflict: 'user_id' }).select().single();
+    btn.disabled = false;
+    if (result.error) {
+      alert('Could not save profile: ' + result.error.message);
+      return;
+    }
+    businessProfile = result.data;
+    flashButton(btn, 'Saved ✓');
   }
 
   async function fetchClientsCatalog() {
@@ -1728,9 +1801,9 @@
 
   function newInvoice() {
     var preserved = {
-      bizTag: state.bizTag,
-      bizPhone: state.bizPhone,
-      bizEmail: state.bizEmail,
+      bizTag: (businessProfile && businessProfile.tagline) ? businessProfile.tagline : state.bizTag,
+      bizPhone: (businessProfile && businessProfile.phone) ? businessProfile.phone : state.bizPhone,
+      bizEmail: (businessProfile && businessProfile.email) ? businessProfile.email : state.bizEmail,
       invTerms: state.invTerms,
       paymentInfo: state.paymentInfo,
       thankyou: state.thankyou
@@ -1838,9 +1911,11 @@
     el('invoiceView').style.display = (v === 'invoice') ? '' : 'none';
     el('clientsView').style.display = (v === 'clients') ? '' : 'none';
     el('servicesView').style.display = (v === 'services') ? '' : 'none';
+    el('profileView').style.display = (v === 'profile') ? '' : 'none';
     el('tabInvoiceBtn').classList.toggle('active', v === 'invoice');
     el('tabClientsBtn').classList.toggle('active', v === 'clients');
     el('tabServicesBtn').classList.toggle('active', v === 'services');
+    el('tabProfileBtn').classList.toggle('active', v === 'profile');
     el('addRowBtn').style.display = (v === 'invoice') ? '' : 'none';
     if (v === 'clients') renderClientsView();
     if (v === 'services') renderServicesView();
@@ -1858,6 +1933,7 @@
     await fetchInvoices();
     await fetchServicesCatalog();
     await fetchClientsCatalog();
+    await fetchBusinessProfile();
     suggestNextInvoiceNumberIfFresh();
   }
 
@@ -1927,6 +2003,8 @@
     document.getElementById('tabInvoiceBtn').addEventListener('click', function () { showView('invoice'); });
     document.getElementById('tabClientsBtn').addEventListener('click', function () { showView('clients'); });
     document.getElementById('tabServicesBtn').addEventListener('click', function () { showView('services'); });
+    document.getElementById('tabProfileBtn').addEventListener('click', function () { showView('profile'); });
+    document.getElementById('saveProfileBtn').addEventListener('click', saveBusinessProfile);
     document.getElementById('clientSearch').addEventListener('input', renderClientsView);
     document.getElementById('serviceSearch').addEventListener('input', renderServicesView);
     document.getElementById('addServiceBtn').addEventListener('click', async function () {

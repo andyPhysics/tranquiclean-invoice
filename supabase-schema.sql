@@ -8,6 +8,7 @@ drop table if exists public.invoice_line_items;
 drop table if exists public.services;
 drop table if exists public.invoices;
 drop table if exists public.clients;
+drop table if exists public.business_profile;
 
 -- ---------- clients ----------
 create table public.clients (
@@ -153,6 +154,35 @@ create policy "Users can delete their own line items"
   on public.invoice_line_items for delete
   using (exists (select 1 from public.invoices i where i.id = invoice_line_items.invoice_id and i.user_id = auth.uid()));
 
+-- ---------- business_profile (one row per user, auto-fills new invoices) ----------
+create table public.business_profile (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null unique default auth.uid() references auth.users(id) on delete cascade,
+  tagline text,
+  phone text,
+  email text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.business_profile enable row level security;
+
+create policy "Users can view their own business profile"
+  on public.business_profile for select
+  using (auth.uid() = user_id);
+
+create policy "Users can insert their own business profile"
+  on public.business_profile for insert
+  with check (auth.uid() = user_id);
+
+create policy "Users can update their own business profile"
+  on public.business_profile for update
+  using (auth.uid() = user_id);
+
+create policy "Users can delete their own business profile"
+  on public.business_profile for delete
+  using (auth.uid() = user_id);
+
 -- ---------- updated_at trigger ----------
 create or replace function public.set_updated_at()
 returns trigger as $$
@@ -172,4 +202,8 @@ for each row execute function public.set_updated_at();
 
 create trigger invoices_set_updated_at
 before update on public.invoices
+for each row execute function public.set_updated_at();
+
+create trigger business_profile_set_updated_at
+before update on public.business_profile
 for each row execute function public.set_updated_at();
