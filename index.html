@@ -394,6 +394,25 @@
   }
   .client-search::placeholder { color: var(--muted); }
 
+  .add-service-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 4px 0 22px;
+  }
+  .add-service-row input {
+    border: 1px solid var(--line) !important;
+    border-radius: 7px;
+    padding: 8px 10px;
+    color: var(--ink);
+    background: var(--mist);
+    width: auto;
+    flex: 1 1 160px;
+  }
+  .add-service-row input::placeholder { color: var(--muted); }
+  .add-service-row button { flex: 0 0 auto; }
+
   .client-cards {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
@@ -518,6 +537,7 @@
     .items tbody tr:first-child td { background: transparent; }
     .totals-row.balance { background: transparent; border: 1px solid var(--brand); }
     #clientsView { display: none !important; }
+    #servicesView { display: none !important; }
     #invoiceView { display: block !important; }
   }
 
@@ -606,6 +626,7 @@
   <div class="tabs" role="tablist">
     <button id="tabInvoiceBtn" class="tab active" type="button" role="tab">Invoice</button>
     <button id="tabClientsBtn" class="tab" type="button" role="tab">Clients</button>
+    <button id="tabServicesBtn" class="tab" type="button" role="tab">Services</button>
   </div>
   <div class="toolbar-legend">
     <span class="dot edit"></span> you edit
@@ -731,6 +752,35 @@
           </tr>
         </thead>
         <tbody id="logBody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<main class="sheet-wrap" id="servicesView" style="display: none;">
+  <section class="sheet clients-sheet">
+    <div class="clients-head">
+      <p class="label">Services</p>
+      <input id="serviceSearch" class="client-search" type="search" placeholder="Search services…" />
+    </div>
+
+    <div class="add-service-row no-print">
+      <input id="newServiceName" type="text" placeholder="New service name" />
+      <input id="newServiceRate" type="number" min="0" step="0.01" placeholder="Default rate" />
+      <button id="addServiceBtn" class="ghost" type="button">+ Add service</button>
+    </div>
+
+    <p id="servicesEmpty" class="empty-state" hidden>No services in your catalog yet. Add one above, or it'll appear here the first time you bill it on an invoice.</p>
+    <div class="table-scroll">
+      <table class="log-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th class="num">Default rate</th>
+            <th class="no-print"></th>
+          </tr>
+        </thead>
+        <tbody id="servicesBody"></tbody>
       </table>
     </div>
   </section>
@@ -903,16 +953,17 @@
   }
 
   async function fetchServicesCatalog() {
-    var result = await supabaseClient.from('services').select('name,default_rate').order('name');
+    var result = await supabaseClient.from('services').select('id,name,default_rate').order('name');
     if (result.error) {
       console.error(result.error);
       return;
     }
     var byName = {};
-    [{ name: 'Standard Clean', default_rate: null }, { name: 'Deep Clean', default_rate: null }].forEach(function (s) { byName[s.name.toLowerCase()] = s; });
+    [{ id: null, name: 'Standard Clean', default_rate: null }, { id: null, name: 'Deep Clean', default_rate: null }].forEach(function (s) { byName[s.name.toLowerCase()] = s; });
     result.data.forEach(function (s) { if (s.name) byName[s.name.toLowerCase()] = s; });
     servicesCatalog = Object.keys(byName).map(function (k) { return byName[k]; });
     renderItems();
+    if (currentView === 'services') renderServicesView();
   }
 
   async function fetchClientsCatalog() {
@@ -1711,14 +1762,88 @@
     await fetchInvoices();
   }
 
+  function renderServicesView() {
+    var searchTerm = el('serviceSearch').value.trim().toLowerCase();
+    var list = servicesCatalog.slice().filter(function (s) { return !searchTerm || s.name.toLowerCase().indexOf(searchTerm) > -1; });
+    list.sort(function (a, b) { return a.name.localeCompare(b.name); });
+
+    el('servicesEmpty').hidden = servicesCatalog.length > 0;
+
+    var tbody = el('servicesBody');
+    tbody.innerHTML = '';
+
+    list.forEach(function (s) {
+      var tr = document.createElement('tr');
+
+      var tdName = document.createElement('td');
+      tdName.textContent = s.name;
+
+      var tdRate = document.createElement('td');
+      tdRate.className = 'num';
+      var rateInput = document.createElement('input');
+      rateInput.type = 'number';
+      rateInput.min = '0';
+      rateInput.step = '0.01';
+      rateInput.placeholder = 'Rate';
+      rateInput.value = (s.default_rate === null || s.default_rate === undefined) ? '' : s.default_rate;
+      rateInput.addEventListener('blur', async function () {
+        var val = rateInput.value === '' ? null : Number(rateInput.value);
+        if (val === s.default_rate) return;
+        rateInput.disabled = true;
+        var result = await upsertService(s.name, val);
+        rateInput.disabled = false;
+        if (result.error) {
+          alert('Could not update rate: ' + result.error.message);
+          return;
+        }
+        await fetchServicesCatalog();
+      });
+      rateInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); rateInput.blur(); } });
+      tdRate.appendChild(rateInput);
+
+      var tdActions = document.createElement('td');
+      tdActions.className = 'no-print';
+      if (s.id) {
+        var delBtn = document.createElement('button');
+        delBtn.className = 'icon-btn danger';
+        delBtn.type = 'button';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', async function () {
+          if (!confirm('Delete "' + s.name + '" from your services catalog? Past invoices that used it are not affected.')) return;
+          var result = await supabaseClient.from('services').delete().eq('id', s.id);
+          if (result.error) {
+            alert('Could not delete: ' + result.error.message);
+            return;
+          }
+          await fetchServicesCatalog();
+        });
+        tdActions.appendChild(delBtn);
+      }
+
+      tr.appendChild(tdName);
+      tr.appendChild(tdRate);
+      tr.appendChild(tdActions);
+      tbody.appendChild(tr);
+    });
+
+    if (list.length === 0 && servicesCatalog.length > 0) {
+      var trEmpty = document.createElement('tr');
+      trEmpty.innerHTML = '<td colspan="3" style="text-align:center;color:var(--muted);font-style:italic;padding:20px;">No services match this search.</td>';
+      tbody.appendChild(trEmpty);
+    }
+  }
+
   function showView(v) {
     currentView = v;
     el('invoiceView').style.display = (v === 'invoice') ? '' : 'none';
     el('clientsView').style.display = (v === 'clients') ? '' : 'none';
+    el('servicesView').style.display = (v === 'services') ? '' : 'none';
     el('tabInvoiceBtn').classList.toggle('active', v === 'invoice');
     el('tabClientsBtn').classList.toggle('active', v === 'clients');
+    el('tabServicesBtn').classList.toggle('active', v === 'services');
     el('addRowBtn').style.display = (v === 'invoice') ? '' : 'none';
     if (v === 'clients') renderClientsView();
+    if (v === 'services') renderServicesView();
   }
 
   function showAuthGate() {
@@ -1801,7 +1926,25 @@
     document.getElementById('saveLogBtn').addEventListener('click', saveToLog);
     document.getElementById('tabInvoiceBtn').addEventListener('click', function () { showView('invoice'); });
     document.getElementById('tabClientsBtn').addEventListener('click', function () { showView('clients'); });
+    document.getElementById('tabServicesBtn').addEventListener('click', function () { showView('services'); });
     document.getElementById('clientSearch').addEventListener('input', renderClientsView);
+    document.getElementById('serviceSearch').addEventListener('input', renderServicesView);
+    document.getElementById('addServiceBtn').addEventListener('click', async function () {
+      var name = el('newServiceName').value.trim();
+      if (!name) { alert('Enter a service name.'); return; }
+      var rate = el('newServiceRate').value === '' ? null : Number(el('newServiceRate').value);
+      var btn = document.getElementById('addServiceBtn');
+      btn.disabled = true;
+      var result = await upsertService(name, rate);
+      btn.disabled = false;
+      if (result.error) {
+        alert('Could not add service: ' + result.error.message);
+        return;
+      }
+      el('newServiceName').value = '';
+      el('newServiceRate').value = '';
+      await fetchServicesCatalog();
+    });
     document.getElementById('resetBtn').addEventListener('click', function () {
       if (!confirm('Reset this invoice back to a blank template? This clears the current invoice draft — your saved client log is not affected.')) return;
       localStorage.removeItem(STORAGE_KEY);
