@@ -1,20 +1,55 @@
--- TranquiClean invoice log — run this once in Supabase → SQL Editor.
+-- TranquiClean invoice log — run this in Supabase → SQL Editor.
+-- This replaces the old single-table `invoices` schema with three normalized
+-- tables: clients, invoices, services (line items).
 
+drop table if exists public.services;
+drop table if exists public.invoices;
+drop table if exists public.clients;
+
+-- ---------- clients ----------
+create table public.clients (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  name text not null,
+  address text,
+  email text,
+  phone text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index clients_user_name_key on public.clients (user_id, lower(name));
+
+alter table public.clients enable row level security;
+
+create policy "Users can view their own clients"
+  on public.clients for select
+  using (auth.uid() = user_id);
+
+create policy "Users can insert their own clients"
+  on public.clients for insert
+  with check (auth.uid() = user_id);
+
+create policy "Users can update their own clients"
+  on public.clients for update
+  using (auth.uid() = user_id);
+
+create policy "Users can delete their own clients"
+  on public.clients for delete
+  using (auth.uid() = user_id);
+
+-- ---------- invoices ----------
 create table public.invoices (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  client_id uuid references public.clients(id) on delete set null,
   invoice_number text not null,
   invoice_date date,
   terms_days integer,
   due_date date,
-  client_name text,
-  client_address text,
-  client_email text,
-  client_phone text,
   same_address boolean default true,
   service_address text,
   service_date date,
-  items jsonb default '[]'::jsonb,
   discount numeric default 0,
   tax_rate numeric default 0,
   amount_paid numeric default 0,
@@ -51,6 +86,39 @@ create policy "Users can delete their own invoices"
   on public.invoices for delete
   using (auth.uid() = user_id);
 
+-- ---------- services (line items) ----------
+create table public.services (
+  id uuid primary key default gen_random_uuid(),
+  invoice_id uuid not null references public.invoices(id) on delete cascade,
+  description text,
+  hours numeric,
+  rate numeric,
+  amount numeric,
+  position integer not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create index services_invoice_id_idx on public.services (invoice_id);
+
+alter table public.services enable row level security;
+
+create policy "Users can view their own services"
+  on public.services for select
+  using (exists (select 1 from public.invoices i where i.id = services.invoice_id and i.user_id = auth.uid()));
+
+create policy "Users can insert their own services"
+  on public.services for insert
+  with check (exists (select 1 from public.invoices i where i.id = services.invoice_id and i.user_id = auth.uid()));
+
+create policy "Users can update their own services"
+  on public.services for update
+  using (exists (select 1 from public.invoices i where i.id = services.invoice_id and i.user_id = auth.uid()));
+
+create policy "Users can delete their own services"
+  on public.services for delete
+  using (exists (select 1 from public.invoices i where i.id = services.invoice_id and i.user_id = auth.uid()));
+
+-- ---------- updated_at trigger ----------
 create or replace function public.set_updated_at()
 returns trigger as $$
 begin
@@ -58,6 +126,10 @@ begin
   return new;
 end;
 $$ language plpgsql;
+
+create trigger clients_set_updated_at
+before update on public.clients
+for each row execute function public.set_updated_at();
 
 create trigger invoices_set_updated_at
 before update on public.invoices

@@ -845,6 +845,8 @@
   var invoiceLog = [];
 
   function rowToLocal(row) {
+    var client = row.client || {};
+    var services = (row.services || []).slice().sort(function (a, b) { return (a.position || 0) - (b.position || 0); });
     return {
       id: row.id,
       savedAt: row.updated_at || row.created_at,
@@ -852,14 +854,16 @@
       invDate: row.invoice_date,
       invTerms: row.terms_days,
       dueDate: row.due_date,
-      clientName: row.client_name,
-      clientAddress: row.client_address,
-      clientEmail: row.client_email,
-      clientPhone: row.client_phone,
+      clientName: client.name || '',
+      clientAddress: client.address || '',
+      clientEmail: client.email || '',
+      clientPhone: client.phone || '',
       sameAddr: row.same_address,
       serviceAddress: row.service_address,
       serviceDate: row.service_date,
-      items: row.items || [],
+      items: services.length
+        ? services.map(function (s) { return { desc: s.description || '', qty: s.hours === null ? '' : s.hours, rate: s.rate === null ? '' : s.rate }; })
+        : [{ desc: '', qty: '', rate: '' }],
       discount: row.discount,
       taxRate: row.tax_rate,
       amountPaid: row.amount_paid,
@@ -876,40 +880,24 @@
     };
   }
 
-  function localToRow(snap) {
-    return {
-      invoice_number: snap.invNumber,
-      invoice_date: snap.invDate || null,
-      terms_days: snap.invTerms,
-      due_date: snap.dueDate || null,
-      client_name: snap.clientName,
-      client_address: snap.clientAddress,
-      client_email: snap.clientEmail,
-      client_phone: snap.clientPhone,
-      same_address: snap.sameAddr,
-      service_address: snap.serviceAddress,
-      service_date: snap.serviceDate || null,
-      items: snap.items,
-      discount: snap.discount,
-      tax_rate: snap.taxRate,
-      amount_paid: snap.amountPaid,
-      payment_info: snap.paymentInfo,
-      notes: snap.notes,
-      thank_you: snap.thankyou,
-      biz_tag: snap.bizTag,
-      biz_phone: snap.bizPhone,
-      biz_email: snap.bizEmail,
-      subtotal: snap.subtotal,
-      tax: snap.tax,
-      total: snap.total,
-      balance_due: snap.balanceDue
-    };
+  async function upsertClient(name, address, email, phone) {
+    var trimmedName = (name || '').trim();
+    var payload = { name: trimmedName, address: address || null, email: email || null, phone: phone || null };
+    var existing = await supabaseClient.from('clients').select('id').ilike('name', trimmedName).limit(1).maybeSingle();
+    if (existing.error) return existing;
+    if (existing.data) {
+      return await supabaseClient.from('clients').update(payload).eq('id', existing.data.id).select().single();
+    }
+    return await supabaseClient.from('clients').insert(payload).select().single();
   }
 
   async function fetchInvoices() {
     var tbody = el('logBody');
     if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);font-style:italic;padding:20px;">Loading…</td></tr>';
-    var result = await supabaseClient.from('invoices').select('*').order('invoice_date', { ascending: false });
+    var result = await supabaseClient
+      .from('invoices')
+      .select('*, client:clients(name,address,email,phone), services(description,hours,rate,amount,position)')
+      .order('invoice_date', { ascending: false });
     if (result.error) {
       console.error(result.error);
       invoiceLog = [];
@@ -1176,13 +1164,78 @@
     var btn = el('saveLogBtn');
     btn.disabled = true;
     var snap = buildSnapshot();
-    var row = localToRow(snap);
-    var result = await supabaseClient.from('invoices').upsert(row, { onConflict: 'user_id,invoice_number' }).select();
-    btn.disabled = false;
-    if (result.error) {
-      alert('Could not save this invoice: ' + result.error.message);
+
+    var clientResult = await upsertClient(snap.clientName, snap.clientAddress, snap.clientEmail, snap.clientPhone);
+    if (clientResult.error) {
+      btn.disabled = false;
+      alert('Could not save client: ' + clientResult.error.message);
       return;
     }
+    var clientId = clientResult.data.id;
+
+    var invoiceRow = {
+      client_id: clientId,
+      invoice_number: snap.invNumber.trim(),
+      invoice_date: snap.invDate || null,
+      terms_days: snap.invTerms,
+      due_date: snap.dueDate || null,
+      same_address: snap.sameAddr,
+      service_address: snap.serviceAddress,
+      service_date: snap.serviceDate || null,
+      discount: snap.discount,
+      tax_rate: snap.taxRate,
+      amount_paid: snap.amountPaid,
+      payment_info: snap.paymentInfo,
+      notes: snap.notes,
+      thank_you: snap.thankyou,
+      biz_tag: snap.bizTag,
+      biz_phone: snap.bizPhone,
+      biz_email: snap.bizEmail,
+      subtotal: snap.subtotal,
+      tax: snap.tax,
+      total: snap.total,
+      balance_due: snap.balanceDue
+    };
+    var invoiceResult = await supabaseClient.from('invoices').upsert(invoiceRow, { onConflict: 'user_id,invoice_number' }).select().single();
+    if (invoiceResult.error) {
+      btn.disabled = false;
+      alert('Could not save this invoice: ' + invoiceResult.error.message);
+      return;
+    }
+    var invoiceId = invoiceResult.data.id;
+
+    var delResult = await supabaseClient.from('services').delete().eq('invoice_id', invoiceId);
+    if (delResult.error) {
+      btn.disabled = false;
+      alert('Could not update line items: ' + delResult.error.message);
+      return;
+    }
+
+    var serviceRows = snap.items
+      .filter(function (it) { return (it.desc && it.desc.trim()) || it.qty !== '' || it.rate !== ''; })
+      .map(function (it, idx) {
+        var hours = it.qty === '' || it.qty === undefined ? null : Number(it.qty);
+        var rate = it.rate === '' || it.rate === undefined ? null : Number(it.rate);
+        return {
+          invoice_id: invoiceId,
+          description: it.desc || '',
+          hours: hours,
+          rate: rate,
+          amount: (hours || 0) * (rate || 0),
+          position: idx
+        };
+      });
+
+    if (serviceRows.length) {
+      var insResult = await supabaseClient.from('services').insert(serviceRows);
+      if (insResult.error) {
+        btn.disabled = false;
+        alert('Could not save line items: ' + insResult.error.message);
+        return;
+      }
+    }
+
+    btn.disabled = false;
     await fetchInvoices();
     flashButton(btn, 'Saved ✓');
   }
