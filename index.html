@@ -611,6 +611,7 @@
   </div>
   <div class="toolbar-actions">
     <span class="toolbar-user no-print"><span id="authedEmail"></span><button id="signOutBtn" class="ghost" type="button">Sign out</button></span>
+    <button id="newInvoiceBtn" class="ghost">+ New invoice</button>
     <button id="addRowBtn" class="ghost">+ Add line item</button>
     <button id="saveLogBtn" class="ghost">Save to client log</button>
     <button id="resetBtn" class="ghost danger">Reset</button>
@@ -1664,6 +1665,32 @@
     el('invNumber').focus();
   }
 
+  function newInvoice() {
+    var preserved = {
+      bizTag: state.bizTag,
+      bizPhone: state.bizPhone,
+      bizEmail: state.bizEmail,
+      invTerms: state.invTerms,
+      paymentInfo: state.paymentInfo,
+      thankyou: state.thankyou
+    };
+    state = JSON.parse(JSON.stringify(defaultState));
+    state.bizTag = preserved.bizTag;
+    state.bizPhone = preserved.bizPhone;
+    state.bizEmail = preserved.bizEmail;
+    state.invTerms = preserved.invTerms;
+    state.paymentInfo = preserved.paymentInfo;
+    state.thankyou = preserved.thankyou;
+    state.invDate = todayISO();
+    state.serviceDate = todayISO();
+    state.invNumber = computeNextInvoiceNumber();
+    saveState();
+    applyStateToForm();
+    showView('invoice');
+    var clientSelect = document.querySelector('#clientNameField select');
+    if (clientSelect) clientSelect.focus();
+  }
+
   async function deleteInvoiceFromLog(id) {
     if (!confirm('Delete this saved invoice from your client log? This cannot be undone.')) return;
     var result = await supabaseClient.from('invoices').delete().eq('id', id);
@@ -1757,6 +1784,7 @@
     recalc();
     rebuildClientSelect();
 
+    document.getElementById('newInvoiceBtn').addEventListener('click', newInvoice);
     document.getElementById('addRowBtn').addEventListener('click', addItem);
     document.getElementById('addRowBtn2').addEventListener('click', addItem);
     document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
