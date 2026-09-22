@@ -156,7 +156,7 @@
     overflow-x: auto;
   }
 
-  input, textarea {
+  input, textarea, select {
     font: inherit;
     color: var(--edit);
     background: transparent;
@@ -167,9 +167,10 @@
   }
   input::placeholder, textarea::placeholder { color: var(--edit-soft); opacity: 1; }
   input:disabled { color: var(--muted); border-bottom-style: dotted; }
-  input:focus, textarea:focus { border-bottom: 1px solid var(--edit); }
+  input:focus, textarea:focus, select:focus { border-bottom: 1px solid var(--edit); }
   textarea { resize: vertical; min-height: 3.2em; line-height: 1.45; font-size: .84rem; }
   input[type="date"], input[type="number"] { width: auto; }
+  select.desc-select { cursor: pointer; }
   input[type="checkbox"] { width: auto; accent-color: var(--brand); }
 
   .calc-value { font-variant-numeric: tabular-nums; }
@@ -676,10 +677,6 @@
         </thead>
         <tbody id="itemsBody"></tbody>
       </table>
-      <datalist id="serviceOptions">
-        <option value="Standard Clean"></option>
-        <option value="Deep Clean"></option>
-      </datalist>
       <button id="addRowBtn2" class="add-row-btn no-print">+ Add line item</button>
     </section>
 
@@ -843,6 +840,7 @@
   }
 
   var invoiceLog = [];
+  var servicesCatalog = [{ name: 'Standard Clean', default_rate: null }, { name: 'Deep Clean', default_rate: null }];
 
   function rowToLocal(row) {
     var client = row.client || {};
@@ -909,12 +907,78 @@
       console.error(result.error);
       return;
     }
-    var dl = el('serviceOptions');
-    var defaults = ['Standard Clean', 'Deep Clean'];
-    var names = {};
-    defaults.forEach(function (n) { names[n] = true; });
-    result.data.forEach(function (s) { if (s.name) names[s.name] = true; });
-    dl.innerHTML = Object.keys(names).map(function (n) { return '<option value="' + escapeHtml(n) + '"></option>'; }).join('');
+    var byName = {};
+    [{ name: 'Standard Clean', default_rate: null }, { name: 'Deep Clean', default_rate: null }].forEach(function (s) { byName[s.name.toLowerCase()] = s; });
+    result.data.forEach(function (s) { if (s.name) byName[s.name.toLowerCase()] = s; });
+    servicesCatalog = Object.keys(byName).map(function (k) { return byName[k]; });
+    renderItems();
+  }
+
+  function findService(name) {
+    var key = (name || '').trim().toLowerCase();
+    if (!key) return null;
+    var matches = servicesCatalog.filter(function (s) { return s.name.toLowerCase() === key; });
+    return matches.length ? matches[0] : null;
+  }
+
+  function populateDescSelect(select, currentDesc) {
+    select.innerHTML = '';
+    var blankOpt = document.createElement('option');
+    blankOpt.value = '';
+    blankOpt.textContent = 'Select a service…';
+    select.appendChild(blankOpt);
+
+    var sorted = servicesCatalog.slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+    var found = false;
+    sorted.forEach(function (s) {
+      var opt = document.createElement('option');
+      opt.value = s.name;
+      opt.textContent = s.name + (s.default_rate !== null && s.default_rate !== undefined ? ' — $' + Number(s.default_rate).toFixed(2) : '');
+      if (s.name === currentDesc) found = true;
+      select.appendChild(opt);
+    });
+
+    if (currentDesc && !found) {
+      var customOpt = document.createElement('option');
+      customOpt.value = currentDesc;
+      customOpt.textContent = currentDesc;
+      select.insertBefore(customOpt, select.children[1]);
+    }
+
+    var addOpt = document.createElement('option');
+    addOpt.value = '__add_new__';
+    addOpt.textContent = '+ Add new service…';
+    select.appendChild(addOpt);
+
+    select.value = currentDesc || '';
+  }
+
+  function startAddNewService(tdDesc, index) {
+    tdDesc.innerHTML = '';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'New service name';
+    tdDesc.appendChild(input);
+    input.focus();
+
+    var committed = false;
+    function commit() {
+      if (committed) return;
+      committed = true;
+      var val = input.value.trim();
+      if (val) {
+        if (!findService(val)) servicesCatalog.push({ name: val, default_rate: null });
+        state.items[index].desc = val;
+        saveState();
+      }
+      renderItems();
+    }
+
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      if (e.key === 'Escape') { committed = true; renderItems(); }
+    });
   }
 
   async function fetchInvoices() {
@@ -969,15 +1033,23 @@
       tr.dataset.index = index;
 
       var tdDesc = document.createElement('td');
-      var descInput = document.createElement('input');
-      descInput.setAttribute('list', 'serviceOptions');
-      descInput.placeholder = 'Standard Clean, Deep Clean, or type your own';
-      descInput.value = item.desc || '';
-      descInput.addEventListener('input', function () {
-        state.items[index].desc = descInput.value;
+      var descSelect = document.createElement('select');
+      descSelect.className = 'desc-select';
+      populateDescSelect(descSelect, item.desc || '');
+      descSelect.addEventListener('change', function () {
+        if (descSelect.value === '__add_new__') {
+          startAddNewService(tdDesc, index);
+          return;
+        }
+        state.items[index].desc = descSelect.value;
+        var match = findService(descSelect.value);
+        if (match && match.default_rate !== null && match.default_rate !== undefined && (state.items[index].rate === '' || state.items[index].rate === undefined)) {
+          state.items[index].rate = match.default_rate;
+        }
         saveState();
+        renderItems();
       });
-      tdDesc.appendChild(descInput);
+      tdDesc.appendChild(descSelect);
 
       var tdQty = document.createElement('td');
       tdQty.className = 'num qty';
