@@ -1604,6 +1604,30 @@
     }
   }
 
+  function computeNextInvoiceNumber() {
+    var best = null;
+    invoiceLog.forEach(function (inv) {
+      var m = /^(\D*)(\d+)$/.exec((inv.invNumber || '').trim());
+      if (!m) return;
+      var num = parseInt(m[2], 10);
+      if (!best || num > best.num) {
+        best = { prefix: m[1], padLen: m[2].length, num: num };
+      }
+    });
+    if (!best) return defaultState.invNumber;
+    var nextDigits = String(best.num + 1);
+    while (nextDigits.length < best.padLen) nextDigits = '0' + nextDigits;
+    return best.prefix + nextDigits;
+  }
+
+  function suggestNextInvoiceNumberIfFresh() {
+    if (!state.invNumber || state.invNumber.trim() === '' || state.invNumber === defaultState.invNumber) {
+      state.invNumber = computeNextInvoiceNumber();
+      saveState();
+      el('invNumber').value = state.invNumber;
+    }
+  }
+
   function openInvoiceFromLog(id) {
     var inv = invoiceLog.filter(function (x) { return x.id === id; })[0];
     if (!inv) return;
@@ -1631,7 +1655,7 @@
 
   function duplicateInvoiceFromLog(id) {
     openInvoiceFromLog(id);
-    state.invNumber = '';
+    state.invNumber = computeNextInvoiceNumber();
     state.invDate = todayISO();
     state.serviceDate = todayISO();
     state.amountPaid = 0;
@@ -1672,6 +1696,7 @@
     await fetchInvoices();
     await fetchServicesCatalog();
     await fetchClientsCatalog();
+    suggestNextInvoiceNumberIfFresh();
   }
 
   async function initAuth() {
